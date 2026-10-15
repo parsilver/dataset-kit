@@ -176,3 +176,18 @@ test('an object is uploaded with the content type its manifest entry records', f
     $plan = array_column(($this->plan)(), null, 'key');
     $this->assertSame('text/plain; charset=utf-8', $plan['demo/v1/2026-10-14/notes.csv']['headers']['Content-Type']);
 });
+
+test('a content type outside the allow-list stops the publish before any upload', function (string $type) {
+    demoBuild($this->out);
+    $path = "{$this->out}/demo/v1/2026-10-14/manifest.json";
+    $manifest = json_decode((string) file_get_contents($path), true);
+    $manifest['files']['notes.csv']['content_type'] = $type;
+    file_put_contents($path, json_encode($manifest));
+    $report = "{$this->out}/gate-2026-10-14.json";
+    $r = json_decode((string) file_get_contents($report), true);
+    $r['manifest_sha256'] = hash('sha256', (string) file_get_contents($path));
+    file_put_contents($report, json_encode($r));
+
+    expect(fn () => ($this->publisher)()->publish($this->out, '2026-10-14'))->toThrow(PublishFailed::class, 'content type that is not allowed');
+    $this->assertFileDoesNotExist("{$this->bucketDir}/demo/v1/latest.json");
+})->with(['text/html', 'text/html; charset=utf-8', "text/plain\r\nSet-Cookie: x=1", 'image/svg+xml', '']);

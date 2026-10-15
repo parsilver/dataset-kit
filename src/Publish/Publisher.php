@@ -78,7 +78,7 @@ final class Publisher
             if ($file !== 'manifest.json') {
                 hash_equals($manifest['files'][$file]['sha256'], hash('sha256', $body)) || throw new PublishFailed("{$file} changed after the gates ran");
             }
-            if ($this->bucket->put($key, $body, ['Content-Type' => $manifest['files'][$file]['content_type'] ?? Manifest::contentType($file), 'Cache-Control' => self::IMMUTABLE], '*')) {
+            if ($this->bucket->put($key, $body, ['Content-Type' => self::contentType($manifest, $file), 'Cache-Control' => self::IMMUTABLE], '*')) {
                 ($this->log)("uploaded {$key}");
                 continue;
             }
@@ -108,6 +108,21 @@ final class Publisher
             $this->purger->purge(["{$this->publicBaseUrl}/{$latestKey}", "{$this->publicBaseUrl}/{$indexKey}"]);
             ($this->log)('purged latest.json and snapshots.json from the cache');
         }
+    }
+
+    /**
+     * The content type the manifest records for a file, which must be one of
+     * Manifest::CONTENT_TYPES: it becomes a response header, so an unlisted
+     * value (html, or one with a line break) stops the publish.
+     *
+     * @param array<string, mixed> $manifest
+     */
+    private static function contentType(array $manifest, string $file): string
+    {
+        $type = $manifest['files'][$file]['content_type'] ?? Manifest::contentType($file);
+        in_array($type, Manifest::CONTENT_TYPES, true) || throw new PublishFailed("{$file} has a content type that is not allowed");
+
+        return $type;
     }
 
     /** @return array<string, mixed> the manifest, once the gates are known to have passed for it */

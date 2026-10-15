@@ -13,6 +13,20 @@ final class Manifest
         return ['sha256' => hash('sha256', $content), 'bytes' => strlen($content), 'content_type' => self::contentType($name)];
     }
 
+    /**
+     * The content types a snapshot file may be published with. A manifest names
+     * the type of each object, and the type decides how a browser treats it, so
+     * text/html (which would render dataset text as a page) and anything with a
+     * parameter or a control character are not on the list.
+     */
+    public const CONTENT_TYPES = [
+        'application/json; charset=utf-8',
+        'application/gzip',
+        'application/vnd.sqlite3',
+        'text/csv; charset=utf-8',
+        'text/plain; charset=utf-8',
+    ];
+
     /** The content type a file is published with when its manifest entry does not say. */
     public static function contentType(string $name): string
     {
