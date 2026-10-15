@@ -24,6 +24,8 @@ test('pretty json ends with a newline and keeps unicode and slashes', function (
 test('a manifest entry carries the sha256, the size and the content type', function () {
     $this->assertSame(['sha256' => hash('sha256', 'abc'), 'bytes' => 3, 'content_type' => 'application/json; charset=utf-8'], Manifest::entry('a.json', 'abc'));
     $this->assertSame('text/csv; charset=utf-8', Manifest::entry('a.csv', '')['content_type']);
+    $this->assertSame('application/gzip', Manifest::entry('cities.ndjson.gz', '')['content_type']);
+    $this->assertSame('application/vnd.sqlite3', Manifest::entry('sqlite/TH.sqlite', '')['content_type']);
 });
 
 test('timestamps are UTC to the second', function () {

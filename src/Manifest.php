@@ -13,9 +13,15 @@ final class Manifest
         return ['sha256' => hash('sha256', $content), 'bytes' => strlen($content), 'content_type' => self::contentType($name)];
     }
 
+    /** The content type a file is published with when its manifest entry does not say. */
     public static function contentType(string $name): string
     {
-        return str_ends_with($name, '.csv') ? 'text/csv; charset=utf-8' : 'application/json; charset=utf-8';
+        return match (true) {
+            str_ends_with($name, '.csv') => 'text/csv; charset=utf-8',
+            str_ends_with($name, '.gz') => 'application/gzip',
+            str_ends_with($name, '.sqlite') => 'application/vnd.sqlite3',
+            default => 'application/json; charset=utf-8',
+        };
     }
 
     /** UTC, second precision, the way every manifest and index stamps time. */

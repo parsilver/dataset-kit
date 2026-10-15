@@ -159,3 +159,20 @@ test('the docs go up under the dataset folder with a short cache, then are purge
 test('only the layout\'s doc files can be published as docs', function () {
     expect(fn () => ($this->publisher)()->publishDocs(['v1/latest.json' => '{}']))->toThrow(InvalidArgumentException::class);
 });
+
+test('an object is uploaded with the content type its manifest entry records', function () {
+    demoBuild($this->out);
+    $path = "{$this->out}/demo/v1/2026-10-14/manifest.json";
+    $manifest = json_decode((string) file_get_contents($path), true);
+    $manifest['files']['notes.csv']['content_type'] = 'text/plain; charset=utf-8';
+    file_put_contents($path, json_encode($manifest));
+    $report = "{$this->out}/gate-2026-10-14.json";
+    $r = json_decode((string) file_get_contents($report), true);
+    $r['manifest_sha256'] = hash('sha256', (string) file_get_contents($path));
+    file_put_contents($report, json_encode($r));
+
+    ($this->publisher)()->publish($this->out, '2026-10-14');
+
+    $plan = array_column(($this->plan)(), null, 'key');
+    $this->assertSame('text/plain; charset=utf-8', $plan['demo/v1/2026-10-14/notes.csv']['headers']['Content-Type']);
+});

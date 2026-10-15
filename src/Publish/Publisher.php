@@ -78,7 +78,7 @@ final class Publisher
             if ($file !== 'manifest.json') {
                 hash_equals($manifest['files'][$file]['sha256'], hash('sha256', $body)) || throw new PublishFailed("{$file} changed after the gates ran");
             }
-            if ($this->bucket->put($key, $body, ['Content-Type' => Manifest::contentType($file), 'Cache-Control' => self::IMMUTABLE], '*')) {
+            if ($this->bucket->put($key, $body, ['Content-Type' => $manifest['files'][$file]['content_type'] ?? Manifest::contentType($file), 'Cache-Control' => self::IMMUTABLE], '*')) {
                 ($this->log)("uploaded {$key}");
                 continue;
             }
