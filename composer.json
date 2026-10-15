@@ -1,0 +1,39 @@
+{
+    "name": "parsilver/dataset-kit",
+    "description": "Plain functions shared by the dataset pipelines: envelope, manifest, snapshot index, schema validation, gates and create-only R2 publish.",
+    "type": "library",
+    "license": "proprietary",
+    "require": {
+        "php": "^8.3",
+        "ext-curl": "*",
+        "ext-json": "*",
+        "opis/json-schema": "^2.4"
+    },
+    "require-dev": {
+        "pestphp/pest": "^3.0|^4.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Farzai\\DatasetKit\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Farzai\\DatasetKit\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "pest"
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        },
+        "platform": {
+            "php": "8.3.0"
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
