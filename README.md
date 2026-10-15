@@ -1,5 +1,10 @@
 # dataset-kit
 
+Internal plumbing for the farzai dataset pipelines. It is public so the
+secret-free fetch and build jobs can install it without a token; it is not a
+supported product, has no stability promise outside those pipelines, and takes
+no feature requests. Licensed under the MIT licence (see `LICENSE`).
+
 Plain functions shared by the dataset pipelines (`thailand-address-data`,
 `geonames-data`). A library, not a framework: each dataset keeps its own fetch,
 parse, build and gates, and calls these for the steps that must be identical.
