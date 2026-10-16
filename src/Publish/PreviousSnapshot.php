@@ -85,15 +85,48 @@ final class PreviousSnapshot
 
     private function get(string $key): ?string
     {
+        $headers = [];
         $curl = curl_init("{$this->base}/{$key}");
-        curl_setopt_array($curl, [CURLOPT_RETURNTRANSFER => true, CURLOPT_FOLLOWLOCATION => false, CURLOPT_TIMEOUT => 120, CURLOPT_HTTPHEADER => ['User-Agent: ' . $this->layout->userAgent]]);
+        curl_setopt_array($curl, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_TIMEOUT => 120,
+            CURLOPT_HTTPHEADER => ['User-Agent: ' . $this->layout->userAgent],
+            CURLOPT_HEADERFUNCTION => function ($curl, string $line) use (&$headers): int {
+                if (str_contains($line, ':')) {
+                    [$name, $value] = explode(':', $line, 2);
+                    $headers[strtolower(trim($name))] = trim($value);
+                }
+
+                return strlen($line);
+            },
+        ]);
         $body = curl_exec($curl);
         $status = (int) curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
         if ($status === 404) {
             return null;
         }
-        ($status === 200 && is_string($body)) || throw new \RuntimeException("GET {$this->base}/{$key} answered {$status}");
-
-        return $body;
+        if ($status === 200 && is_string($body)) {
+            return $body;
+        }
+        $url = "{$this->base}/{$key}";
+        // Cloudflare fronts the whole bucket and stamps cf-ray on every response, a 404 and an R2
+        // 403 or a 503 outage included, so the headers alone prove nothing about a bot block. Name
+        // one only when Cloudflare says it mitigated the request (cf-mitigated: challenge) or the
+        // body is its challenge page; otherwise report the refusal without guessing a cause.
+        $viaCloudflare = isset($headers['cf-ray']) || strtolower($headers['server'] ?? '') === 'cloudflare';
+        if (in_array($status, [403, 429, 503], true) && $viaCloudflare) {
+            $ray = $headers['cf-ray'] ?? 'none';
+            $challenged = strtolower($headers['cf-mitigated'] ?? '') === 'challenge'
+                || (is_string($body) && preg_match('/Attention Required|Just a moment|cf-chl|challenge-platform/i', $body) === 1);
+            if ($challenged) {
+                throw new \RuntimeException(
+                    "GET {$url} answered {$status}: challenged by Cloudflare (bot protection or WAF, cf-ray {$ray}), not a missing object. "
+                    . 'The zone refuses this machine; allow it in the zone\'s security settings or run from an allowed network.'
+                );
+            }
+            throw new \RuntimeException("GET {$url} answered {$status}: refused at Cloudflare's edge (cf-ray {$ray}), not a missing object.");
+        }
+        throw new \RuntimeException("GET {$url} answered {$status}" . ($status === 0 ? ' (no response: ' . curl_error($curl) . ')' : ''));
     }
 }

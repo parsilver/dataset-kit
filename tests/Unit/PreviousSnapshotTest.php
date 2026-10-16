@@ -97,3 +97,109 @@ test('an id nobody has touched is not stranded', function () {
 
     $this->assertSame([], json_decode((string) file_get_contents("{$this->into}/stranded.json"), true));
 });
+
+/** Serve every request with tests/Support/forbidding-cdn.php in the given mode. */
+function forbiddingCdn(string $mode): array
+{
+    $socket = stream_socket_server('tcp://127.0.0.1:0');
+    $name = (string) stream_socket_get_name($socket, false);
+    $port = (int) substr($name, strrpos($name, ':') + 1);
+    fclose($socket);
+    $proc = proc_open(
+        [PHP_BINARY, '-S', "127.0.0.1:{$port}", dirname(__DIR__) . '/Support/forbidding-cdn.php'],
+        [1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']],
+        $pipes,
+        null,
+        ['CF_MODE' => $mode] + getenv(),
+    );
+    for ($i = 0; $i < 200; $i++) {
+        $probe = curl_init("http://127.0.0.1:{$port}/");
+        curl_setopt_array($probe, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT_MS => 200]);
+        if (curl_exec($probe) !== false) {
+            break;
+        }
+        usleep(20_000);
+    }
+
+    return [$proc, "http://127.0.0.1:{$port}", $port];
+}
+
+test('a 403 from Cloudflare says it is a block, not a missing object, with the ray id', function () {
+    [$proc, $base, $port] = forbiddingCdn('cloudflare');
+    try {
+        try {
+            (new PreviousSnapshot(demoLayout(), $base))->pull($this->into);
+            $this->fail('expected a refusal');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('challenged by Cloudflare', $e->getMessage());
+            $this->assertStringContainsString('cf-ray 8d2f0c1b3a4e5f60-SIN', $e->getMessage());
+            $this->assertStringContainsString('not a missing object', $e->getMessage());
+        }
+    } finally {
+        proc_terminate($proc);
+        proc_close($proc);
+        exec('pkill -f ' . escapeshellarg("php -S 127.0.0.1:{$port}") . ' 2>/dev/null');
+    }
+});
+
+test('a cf-ray 403 with no challenge is refused at the edge, with no cause named', function () {
+    [$proc, $base, $port] = forbiddingCdn('edge');
+    try {
+        try {
+            (new PreviousSnapshot(demoLayout(), $base))->pull($this->into);
+            $this->fail('expected a refusal');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString("refused at Cloudflare's edge (cf-ray 8d2f0c1b3a4e5f60-SIN)", $e->getMessage());
+            $this->assertStringNotContainsString('challenged', $e->getMessage());
+            $this->assertStringNotContainsString('bot', $e->getMessage());
+            $this->assertStringNotContainsString('security settings', $e->getMessage());
+        }
+    } finally {
+        proc_terminate($proc);
+        proc_close($proc);
+        exec('pkill -f ' . escapeshellarg("php -S 127.0.0.1:{$port}") . ' 2>/dev/null');
+    }
+});
+
+test('cf-mitigated: challenge names a challenge even when the body is not the challenge page', function () {
+    [$proc, $base, $port] = forbiddingCdn('mitigated');
+    try {
+        try {
+            (new PreviousSnapshot(demoLayout(), $base))->pull($this->into);
+            $this->fail('expected a refusal');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('challenged by Cloudflare', $e->getMessage());
+        }
+    } finally {
+        proc_terminate($proc);
+        proc_close($proc);
+        exec('pkill -f ' . escapeshellarg("php -S 127.0.0.1:{$port}") . ' 2>/dev/null');
+    }
+});
+
+test('a plain 403 is reported as refused, without blaming Cloudflare', function () {
+    [$proc, $base, $port] = forbiddingCdn('origin');
+    try {
+        try {
+            (new PreviousSnapshot(demoLayout(), $base))->pull($this->into);
+            $this->fail('expected a refusal');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('answered 403', $e->getMessage());
+            $this->assertStringNotContainsString('Cloudflare', $e->getMessage());
+        }
+    } finally {
+        proc_terminate($proc);
+        proc_close($proc);
+        exec('pkill -f ' . escapeshellarg("php -S 127.0.0.1:{$port}") . ' 2>/dev/null');
+    }
+});
+
+test('a request that gets no response carries curl\'s error', function () {
+    // Nothing listens on port 1.
+    try {
+        (new PreviousSnapshot(demoLayout(), 'http://127.0.0.1:1'))->pull($this->into);
+        $this->fail('expected a failure');
+    } catch (RuntimeException $e) {
+        $this->assertStringContainsString('no response', $e->getMessage());
+    }
+});
