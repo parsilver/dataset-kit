@@ -33,6 +33,12 @@ $respond = function (int $status, string $body = '', array $extra = []) use (&$s
     echo $body;
 };
 
+if (str_starts_with($path, 'client/v4/zones/')) { // the Cloudflare purge, for a full run through bin/
+    $respond(200, '{"success":true}', ['Content-Type' => 'application/json']);
+
+    return;
+}
+
 if ($latency > 0) {
     usleep($latency * 1000);
 }
