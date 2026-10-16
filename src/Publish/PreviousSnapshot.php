@@ -110,16 +110,22 @@ final class PreviousSnapshot
             return $body;
         }
         $url = "{$this->base}/{$key}";
-        // A 403 from Cloudflare's edge is its bot protection or WAF refusing this machine, not the
-        // bucket saying the object is missing (that is a 404). Say which, so nobody goes looking
-        // for a missing file.
-        if (in_array($status, [403, 429, 503], true) && (isset($headers['cf-ray']) || strtolower($headers['server'] ?? '') === 'cloudflare')) {
+        // Cloudflare fronts the whole bucket and stamps cf-ray on every response, a 404 and an R2
+        // 403 or a 503 outage included, so the headers alone prove nothing about a bot block. Name
+        // one only when Cloudflare says it mitigated the request (cf-mitigated: challenge) or the
+        // body is its challenge page; otherwise report the refusal without guessing a cause.
+        $viaCloudflare = isset($headers['cf-ray']) || strtolower($headers['server'] ?? '') === 'cloudflare';
+        if (in_array($status, [403, 429, 503], true) && $viaCloudflare) {
             $ray = $headers['cf-ray'] ?? 'none';
-            $challenge = is_string($body) && preg_match('/Attention Required|Just a moment|cf-chl|challenge-platform/i', $body) === 1 ? ', challenge page' : '';
-            throw new \RuntimeException(
-                "GET {$url} answered {$status}: blocked by Cloudflare (bot protection or WAF{$challenge}, cf-ray {$ray}), not a missing object. "
-                . 'The zone refuses this machine; allow it in the zone\'s security settings or run from an allowed network.'
-            );
+            $challenged = strtolower($headers['cf-mitigated'] ?? '') === 'challenge'
+                || (is_string($body) && preg_match('/Attention Required|Just a moment|cf-chl|challenge-platform/i', $body) === 1);
+            if ($challenged) {
+                throw new \RuntimeException(
+                    "GET {$url} answered {$status}: challenged by Cloudflare (bot protection or WAF, cf-ray {$ray}), not a missing object. "
+                    . 'The zone refuses this machine; allow it in the zone\'s security settings or run from an allowed network.'
+                );
+            }
+            throw new \RuntimeException("GET {$url} answered {$status}: refused at Cloudflare's edge (cf-ray {$ray}), not a missing object.");
         }
         throw new \RuntimeException("GET {$url} answered {$status}" . ($status === 0 ? ' (no response: ' . curl_error($curl) . ')' : ''));
     }

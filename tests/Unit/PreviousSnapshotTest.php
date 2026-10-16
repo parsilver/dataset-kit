@@ -131,10 +131,44 @@ test('a 403 from Cloudflare says it is a block, not a missing object, with the r
             (new PreviousSnapshot(demoLayout(), $base))->pull($this->into);
             $this->fail('expected a refusal');
         } catch (RuntimeException $e) {
-            $this->assertStringContainsString('blocked by Cloudflare', $e->getMessage());
+            $this->assertStringContainsString('challenged by Cloudflare', $e->getMessage());
             $this->assertStringContainsString('cf-ray 8d2f0c1b3a4e5f60-SIN', $e->getMessage());
             $this->assertStringContainsString('not a missing object', $e->getMessage());
-            $this->assertStringContainsString('challenge page', $e->getMessage());
+        }
+    } finally {
+        proc_terminate($proc);
+        proc_close($proc);
+        exec('pkill -f ' . escapeshellarg("php -S 127.0.0.1:{$port}") . ' 2>/dev/null');
+    }
+});
+
+test('a cf-ray 403 with no challenge is refused at the edge, with no cause named', function () {
+    [$proc, $base, $port] = forbiddingCdn('edge');
+    try {
+        try {
+            (new PreviousSnapshot(demoLayout(), $base))->pull($this->into);
+            $this->fail('expected a refusal');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString("refused at Cloudflare's edge (cf-ray 8d2f0c1b3a4e5f60-SIN)", $e->getMessage());
+            $this->assertStringNotContainsString('challenged', $e->getMessage());
+            $this->assertStringNotContainsString('bot', $e->getMessage());
+            $this->assertStringNotContainsString('security settings', $e->getMessage());
+        }
+    } finally {
+        proc_terminate($proc);
+        proc_close($proc);
+        exec('pkill -f ' . escapeshellarg("php -S 127.0.0.1:{$port}") . ' 2>/dev/null');
+    }
+});
+
+test('cf-mitigated: challenge names a challenge even when the body is not the challenge page', function () {
+    [$proc, $base, $port] = forbiddingCdn('mitigated');
+    try {
+        try {
+            (new PreviousSnapshot(demoLayout(), $base))->pull($this->into);
+            $this->fail('expected a refusal');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('challenged by Cloudflare', $e->getMessage());
         }
     } finally {
         proc_terminate($proc);
