@@ -55,4 +55,25 @@ final class DirectoryBucket implements Bucket
 
         return ['body' => $body, 'etag' => '"' . md5($body) . '"'];
     }
+
+    public function headAll(array $keys, int $concurrency): array
+    {
+        $out = [];
+        foreach ($keys as $key) {
+            $path = "{$this->root}/{$key}";
+            $out[$key] = is_file($path) ? ['etag' => '"' . md5_file($path) . '"', 'size' => (int) filesize($path)] : null;
+        }
+
+        return $out;
+    }
+
+    public function putAll(array $items, int $concurrency): array
+    {
+        $out = [];
+        foreach ($items as $item) {
+            $out[$item['key']] = $this->put($item['key'], ($item['body'])(), $item['headers'], '*');
+        }
+
+        return $out;
+    }
 }

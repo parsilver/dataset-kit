@@ -39,21 +39,25 @@ afterEach(function () {
     exec('rm -rf ' . escapeshellarg($this->out) . ' ' . escapeshellarg($this->bucketDir));
 });
 
-test('uploads the ordered files, then the derived ones sorted, the manifest, snapshots.json, latest.json, then purges', function () {
+test('claims the first ordered file, uploads every other file, then the manifest, snapshots.json, latest.json, then purges', function () {
     demoBuild($this->out);
     ($this->publisher)()->publish($this->out, '2026-10-14');
 
     $keys = array_column(($this->plan)(), 'key');
+    $this->assertSame('demo/v1/2026-10-14/items.json', $keys[0], 'the claim goes first, alone');
+    $middle = array_slice($keys, 1, 4);
+    sort($middle);
     $this->assertSame([
-        'demo/v1/2026-10-14/items.json',
-        'demo/v1/2026-10-14/notes.csv',
-        'demo/v1/2026-10-14/schema.json',
         'demo/v1/2026-10-14/by/a.json',
         'demo/v1/2026-10-14/by/x.json',
+        'demo/v1/2026-10-14/notes.csv',
+        'demo/v1/2026-10-14/schema.json',
+    ], $middle, 'the rest in any order');
+    $this->assertSame([
         'demo/v1/2026-10-14/manifest.json',
         'demo/v1/snapshots.json',
         'demo/v1/latest.json',
-    ], $keys);
+    ], array_slice($keys, 5), 'the pointers last');
     $this->assertSame(['https://data.example/demo/v1/latest.json', 'https://data.example/demo/v1/snapshots.json'], $this->purger->urls);
 });
 
@@ -217,6 +221,20 @@ test('every key the publisher touches is under the layout root, docs and pointer
             $this->keys[] = $key;
 
             return $this->inner->get($key);
+        }
+
+        public function headAll(array $keys, int $concurrency): array
+        {
+            array_push($this->keys, ...$keys);
+
+            return $this->inner->headAll($keys, $concurrency);
+        }
+
+        public function putAll(array $items, int $concurrency): array
+        {
+            array_push($this->keys, ...array_column($items, 'key'));
+
+            return $this->inner->putAll($items, $concurrency);
         }
     };
     $publisher = ($this->publisher)($spy);

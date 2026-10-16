@@ -49,6 +49,7 @@ final class Publisher
         private readonly string $publicBaseUrl,
         private readonly \Closure $log,
         private readonly ?\Closure $now = null,
+        private readonly int $concurrency = 24,
     ) {
         $this->bucket = new ScopedBucket($bucket, $layout->root);
     }
@@ -72,24 +73,49 @@ final class Publisher
         ($remoteIndex['snapshots'] ?? null) === $base['snapshots']
             || throw new PublishFailed('the bucket\'s snapshots.json is not the one this build started from; rebuild against the current index');
 
-        // The main files in their order, then the derived ones, the manifest last.
+        // The snapshot's objects, then its manifest, then the index and latest.
+        //
+        // The first file of the layout's order is the CLAIM: it is written alone and first, so a
+        // directory that holds objects always holds it, and PreviousSnapshot can tell a stranded
+        // directory from an untouched id by that one probe. The rest go up in parallel, biggest
+        // first, and the manifest, snapshots.json and latest.json only after every one of them has
+        // been written or verified. An object that already exists must be byte-identical (a rerun
+        // of the same build completes a stranded directory) and is never overwritten.
         $derived = array_values(array_diff(array_keys($manifest['files']), $this->layout->order));
         sort($derived, SORT_STRING);
-        foreach ([...$this->layout->order, ...$derived, 'manifest.json'] as $file) {
-            $key = $this->layout->prefix() . "/{$snapshot}/{$file}";
-            $body = (string) file_get_contents("{$dir}/{$file}");
-            if ($file !== 'manifest.json') {
-                hash_equals($manifest['files'][$file]['sha256'], hash('sha256', $body)) || throw new PublishFailed("{$file} changed after the gates ran");
-            }
-            if ($this->bucket->put($key, $body, ['Content-Type' => self::contentType($manifest, $file), 'Cache-Control' => self::IMMUTABLE], '*')) {
-                ($this->log)("uploaded {$key}");
-                continue;
-            }
-            $existing = $this->bucket->get($key);
-            $existing !== null && hash_equals(hash('sha256', $body), hash('sha256', $existing['body']))
-                || throw new PublishFailed("{$key} already exists with other content; a snapshot is never overwritten");
-            ($this->log)("already there, identical: {$key}");
+        $files = [...$this->layout->order, ...$derived];
+        $prefix = $this->layout->prefix() . "/{$snapshot}/";
+        $claim = array_shift($files);
+        $fresh = $this->putCreateOnly($prefix . $claim, $this->verified($dir, $claim, $manifest), self::contentType($manifest, $claim));
+
+        usort($files, fn (string $a, string $b) => $manifest['files'][$b]['bytes'] <=> $manifest['files'][$a]['bytes'] ?: strcmp($a, $b));
+        $items = [];
+        $bodies = [];
+        foreach ($files as $file) {
+            $items[] = [
+                'key' => $prefix . $file,
+                'body' => fn () => $this->verified($dir, $file, $manifest),
+                'headers' => ['Content-Type' => self::contentType($manifest, $file), 'Cache-Control' => self::IMMUTABLE],
+            ];
+            $bodies[$prefix . $file] = $file;
         }
+        if (!$fresh) {
+            // The claim was already there: this directory was started before (a rerun of the same
+            // build, or a publish that died). Ask what is stored first, so the bytes of an object
+            // that is already there are not uploaded again just to be refused.
+            $heads = $this->bucket->headAll(array_column($items, 'key'), $this->concurrency);
+            $there = array_keys(array_filter($heads, fn (?array $head) => $head !== null));
+            $this->verifyExisting($there, fn (string $key) => $this->verified($dir, $bodies[$key], $manifest), $heads);
+            $items = array_values(array_filter($items, fn (array $item) => !in_array($item['key'], $there, true)));
+        }
+        $written = $this->bucket->putAll($items, $this->concurrency);
+        $existing = array_keys(array_filter($written, fn (bool $created) => !$created));
+        ($this->log)(sprintf('uploaded %d objects, %d already there', count($written) - count($existing), count($existing) + (isset($there) ? count($there) : 0)));
+        // An object that appeared between the check and the upload (two runs at once) is verified too.
+        $this->verifyExisting($existing, fn (string $key) => $this->verified($dir, $bodies[$key], $manifest));
+
+        $manifestKey = $prefix . 'manifest.json';
+        $this->putCreateOnly($manifestKey, (string) self::read("{$dir}/manifest.json"), self::contentType($manifest, 'manifest.json'));
 
         // published_at is when the snapshot becomes reachable, which is now:
         // the build may be hours old after an approve-and-rerun.
@@ -110,6 +136,60 @@ final class Publisher
         if ($this->purger !== null) {
             $this->purger->purge(["{$this->publicBaseUrl}/{$latestKey}", "{$this->publicBaseUrl}/{$indexKey}"]);
             ($this->log)('purged latest.json and snapshots.json from the cache');
+        }
+    }
+
+    /** The file's bytes, read from the build and checked against the manifest the gates passed. */
+    private function verified(string $dir, string $file, array $manifest): string
+    {
+        $body = (string) file_get_contents("{$dir}/{$file}");
+        if ($file !== 'manifest.json' && !hash_equals($manifest['files'][$file]['sha256'], hash('sha256', $body))) {
+            throw new PublishFailed("{$file} changed after the gates ran");
+        }
+
+        return $body;
+    }
+
+    /** @return bool true when written, false when it was already there and identical */
+    private function putCreateOnly(string $key, string $body, string $contentType): bool
+    {
+        if ($this->bucket->put($key, $body, ['Content-Type' => $contentType, 'Cache-Control' => self::IMMUTABLE], '*')) {
+            ($this->log)("uploaded {$key}");
+
+            return true;
+        }
+        $this->verifyExisting([$key], fn () => $body);
+
+        return false;
+    }
+
+    /**
+     * Objects a create-only upload found already there must be this build's bytes. The ETag of a
+     * plain PUT is the body's md5, so size and md5 settle it without downloading; an ETag that is
+     * not an md5 is settled by comparing the downloaded body.
+     *
+     * @param list<string> $keys
+     * @param \Closure(string): string $expected
+     * @param array<string, array{etag: string, size: int}|null>|null $heads what the bucket was already asked
+     */
+    private function verifyExisting(array $keys, \Closure $expected, ?array $heads = null): void
+    {
+        if ($keys === []) {
+            return;
+        }
+        $heads ??= $this->bucket->headAll($keys, $this->concurrency);
+        foreach ($keys as $key) {
+            $body = $expected($key);
+            $head = $heads[$key] ?? null;
+            $same = false;
+            if ($head !== null && preg_match('/^"?[0-9a-f]{32}"?$/', $head['etag']) === 1) {
+                $same = $head['size'] === strlen($body) && trim($head['etag'], '"') === md5($body);
+            } elseif ($head !== null) {
+                $remote = $this->bucket->get($key);
+                $same = $remote !== null && hash_equals(hash('sha256', $body), hash('sha256', $remote['body']));
+            }
+            $same || throw new PublishFailed("{$key} already exists with other content; a snapshot is never overwritten");
+            ($this->log)("already there, identical: {$key}");
         }
     }
 

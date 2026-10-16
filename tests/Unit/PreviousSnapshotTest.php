@@ -81,3 +81,19 @@ test('nothing stranded writes an empty list', function () {
     ($this->previous)()->pull($this->into, '2026-11-01');
     $this->assertSame([], json_decode((string) file_get_contents("{$this->into}/stranded.json"), true));
 });
+
+test('a snapshot directory the layout claimed but never finished is stranded, so the next build takes the next id', function () {
+    // A publish that died after its first object: no manifest, so nothing points at it.
+    mkdir("{$this->cdn}/demo/v1/2026-10-16", 0o755, true);
+    file_put_contents("{$this->cdn}/demo/v1/2026-10-16/items.json", '{}');
+
+    ($this->previous)()->pull($this->into, '2026-10-16');
+
+    $this->assertSame(['2026-10-16'], json_decode((string) file_get_contents("{$this->into}/stranded.json"), true));
+});
+
+test('an id nobody has touched is not stranded', function () {
+    ($this->previous)()->pull($this->into, '2026-10-16');
+
+    $this->assertSame([], json_decode((string) file_get_contents("{$this->into}/stranded.json"), true));
+});

@@ -31,6 +31,20 @@ final class ScopedBucket implements Bucket
         return $this->inner->get($this->checked($key));
     }
 
+    public function headAll(array $keys, int $concurrency): array
+    {
+        return $this->inner->headAll(array_map($this->checked(...), $keys), $concurrency);
+    }
+
+    public function putAll(array $items, int $concurrency): array
+    {
+        foreach ($items as $item) {
+            $this->checked($item['key']);
+        }
+
+        return $this->inner->putAll($items, $concurrency);
+    }
+
     private function checked(string $key): string
     {
         $inside = str_starts_with($key, "{$this->root}/")

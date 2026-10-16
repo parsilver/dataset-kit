@@ -29,9 +29,11 @@ final class PreviousSnapshot
      * manifest against the sha256 the index records.
      *
      * Also writes <dir>/stranded.json: the ids for $date that have a
-     * manifest.json in the bucket but are not in the index. A publish that
-     * died between its manifest and snapshots.json leaves one, and a new build
-     * of that id could never upload over it, so the build skips it.
+     * manifest.json or the layout's first file in the bucket but are not in the
+     * index. A publish that died partway leaves one, and a new build of that id
+     * would meet other bytes where it must never overwrite, so the build takes
+     * the next id. (A rerun of the SAME build does not need a new id: it
+     * completes the directory.)
      *
      * @return string|null the id of the last published snapshot, null when nothing is published yet
      */
@@ -41,7 +43,12 @@ final class PreviousSnapshot
         $index = $indexJson === null ? null : json_decode($indexJson, true, flags: JSON_THROW_ON_ERROR);
         is_dir($dir) || mkdir($dir, 0o755, true);
         $stranded = [];
-        for ($id = Snapshots::nextId($date ?? gmdate('Y-m-d'), $index); $this->get($this->layout->prefix() . "/{$id}/manifest.json") !== null; $id = Snapshots::nextId($date ?? gmdate('Y-m-d'), $index, $stranded)) {
+        // An id is taken when its manifest is there (a publish that died before the index) or its
+        // claim file is: the Publisher writes the layout's first file alone and first, so a
+        // directory with any object has it, and a build that reused the id would meet other bytes.
+        $touched = fn (string $id): bool => $this->get($this->layout->prefix() . "/{$id}/manifest.json") !== null
+            || $this->get($this->layout->prefix() . "/{$id}/" . $this->layout->order[0]) !== null;
+        for ($id = Snapshots::nextId($date ?? gmdate('Y-m-d'), $index); $touched($id); $id = Snapshots::nextId($date ?? gmdate('Y-m-d'), $index, $stranded)) {
             $stranded[] = $id;
         }
         file_put_contents("{$dir}/stranded.json", json_encode($stranded) . "\n");

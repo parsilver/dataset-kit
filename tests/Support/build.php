@@ -29,7 +29,7 @@ function demoLayout(): Layout
  *
  * @param list<Failure> $failures
  */
-function demoBuild(string $out, string $snapshot = '2026-10-14', array $failures = [], ?array $index = null): void
+function demoBuild(string $out, string $snapshot = '2026-10-14', array $failures = [], ?array $index = null, int $extraFiles = 0): void
 {
     $layout = demoLayout();
     $dir = "{$out}/" . $layout->prefix() . "/{$snapshot}";
@@ -41,6 +41,9 @@ function demoBuild(string $out, string $snapshot = '2026-10-14', array $failures
         'by/x.json' => Envelope::encode('1.0.0', $snapshot, [['id' => 1]]),
         'by/a.json' => Envelope::encode('1.0.0', $snapshot, [['id' => 2]]),
     ];
+    for ($i = 0; $i < $extraFiles; $i++) {
+        $files[sprintf('by/f%03d.json', $i)] = Envelope::encode('1.0.0', $snapshot, [['id' => $i]]);
+    }
     $listed = [];
     foreach ($files as $name => $content) {
         file_put_contents("{$dir}/{$name}", $content);
