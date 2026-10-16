@@ -13,7 +13,7 @@ final class Layout
     /**
      * @param string $root the dataset's folder in the bucket, e.g. "thailand-address"
      * @param string $schemaVersion the schema_version every file and the index carry
-     * @param list<string> $order the snapshot files uploaded first, in order; every file the manifest lists beyond these follows, sorted, and manifest.json goes last
+     * @param list<string> $order the snapshot files the layout names; the FIRST is the claim: uploaded alone before everything else, it marks a snapshot directory as taken (see PreviousSnapshot, which fetches it whole through the CDN: keep it small). Every other file, these and the rest the manifest lists, is uploaded in parallel in no set order, and manifest.json goes after all of them
      * @param list<string> $required the files a snapshot must list in its manifest
      * @param list<string> $previous the files a build needs from the last published snapshot
      * @param array<string, string> $docs the un-versioned doc files and their content types
