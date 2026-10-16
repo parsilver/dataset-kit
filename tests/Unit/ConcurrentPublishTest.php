@@ -86,12 +86,9 @@ test('uploads many objects at once, and much faster than one at a time', functio
     demoBuild($this->out, extraFiles: 120);
     ($this->start)(40);
 
-    $t = microtime(true);
     ($this->publisher)(16)->publish($this->out, '2026-10-14');
-    $elapsed = microtime(true) - $t;
 
-    // 125 files + manifest + index + latest at 40 ms each, one at a time, is over 5 s.
-    $this->assertLessThan(2.5, $elapsed, 'the snapshot should upload in parallel');
+    // Wall-clock time depends on the machine; the overlap below is what proves it is parallel.
     $puts = array_values(array_filter(($this->log)(), fn (array $r) => $r['method'] === 'PUT'));
     $peak = 0;
     foreach ($puts as $a) {
@@ -196,4 +193,68 @@ test('a claim file that exists with other content stops the publish at once', fu
 
     $puts = array_filter(($this->log)(), fn (array $r) => $r['method'] === 'PUT');
     $this->assertCount(1, $puts, 'nothing else was uploaded');
+});
+
+test('retries that never succeed end the publish with the number of attempts, before the manifest', function () {
+    demoBuild($this->out, extraFiles: 5);
+    ($this->start)();
+    ($this->faults)([SNAP . 'by/f002.json' => [503, 100]]);
+
+    expect(fn () => ($this->publisher)()->publish($this->out, '2026-10-14'))->toThrow(PublishFailed::class, 'after 5 attempts');
+
+    $this->assertCount(5, array_filter(($this->log)(), fn (array $r) => $r['key'] === SNAP . 'by/f002.json'));
+    $this->assertNull(($this->object)(SNAP . 'manifest.json'));
+});
+
+test('the claim, the manifest and the pointers are retried like the objects', function () {
+    demoBuild($this->out, extraFiles: 3);
+    ($this->start)();
+    ($this->faults)([SNAP . 'items.json' => [503, 2], SNAP . 'manifest.json' => [503, 1], 'demo/v1/latest.json' => [429, 1]]);
+
+    ($this->publisher)()->publish($this->out, '2026-10-14');
+
+    $this->assertNotNull(($this->object)('demo/v1/latest.json'));
+    $this->assertCount(3, array_filter(($this->log)(), fn (array $r) => $r['key'] === SNAP . 'items.json'));
+});
+
+test('an object stored but not acknowledged is found identical on the retry (412), not re-sent as new', function () {
+    demoBuild($this->out, extraFiles: 5);
+    ($this->start)();
+    // The server stores by/f001.json and then answers 503: the retry meets 412.
+    ($this->faults)([SNAP . 'by/f001.json' => [503, 1, 'after']]);
+
+    ($this->publisher)()->publish($this->out, '2026-10-14');
+
+    $this->assertSame(file_get_contents("{$this->out}/demo/v1/2026-10-14/by/f001.json"), ($this->object)(SNAP . 'by/f001.json'));
+    $this->assertNotNull(($this->object)('demo/v1/latest.json'));
+});
+
+test('ETags that are not an md5 are verified by comparing the bodies, and a different body still stops the publish', function () {
+    demoBuild($this->out, extraFiles: 6);
+    ($this->start)();
+    touch("{$this->s3}/odd-etags");
+    $dir = "{$this->out}/demo/v1/2026-10-14";
+    foreach (['items.json', 'by/f000.json', 'by/f001.json'] as $file) {
+        is_dir(dirname("{$this->s3}/objects/" . SNAP . $file)) || mkdir(dirname("{$this->s3}/objects/" . SNAP . $file), 0o755, true);
+        copy("{$dir}/{$file}", "{$this->s3}/objects/" . SNAP . $file);
+    }
+    ($this->publisher)()->publish($this->out, '2026-10-14');
+    $this->assertNotNull(($this->object)('demo/v1/latest.json'));
+
+    // A second directory: same shape, one object with other bytes.
+    $other = tmpDir('cp-build2');
+    demoBuild($other, '2026-10-15', extraFiles: 6);
+    $dir2 = "{$other}/demo/v1/2026-10-15";
+    mkdir("{$this->s3}/objects/demo/v1/2026-10-15/by", 0o755, true);
+    copy("{$dir2}/items.json", "{$this->s3}/objects/demo/v1/2026-10-15/items.json");
+    file_put_contents("{$this->s3}/objects/demo/v1/2026-10-15/by/f001.json", 'other bytes, same size?');
+    $publisher = new Publisher(demoLayout(), ($this->bucket)(), null, 'https://data.example', function (string $l) {
+    });
+    // the earlier snapshot is now published, so build against its index
+    $index = json_decode((string) file_get_contents("{$this->s3}/objects/demo/v1/snapshots.json"), true);
+    exec('rm -rf ' . escapeshellarg($other));
+    $other = tmpDir('cp-build3');
+    demoBuild($other, '2026-10-15', index: $index, extraFiles: 6);
+    expect(fn () => $publisher->publish($other, '2026-10-15'))->toThrow(PublishFailed::class, 'never overwritten');
+    exec('rm -rf ' . escapeshellarg($other));
 });

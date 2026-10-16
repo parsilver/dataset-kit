@@ -14,6 +14,17 @@ final class S3Bucket implements Bucket
 
     private const ATTEMPTS = 5;
 
+    /** No overall deadline for a big object under contention: abort only when it has crawled for a minute. */
+    private const CURL_LIMITS = [
+        CURLOPT_TIMEOUT => 1200,
+        CURLOPT_LOW_SPEED_LIMIT => 1024,
+        CURLOPT_LOW_SPEED_TIME => 60,
+        CURLOPT_CONNECTTIMEOUT => 30,
+    ];
+
+    /** The longest a server's Retry-After is honoured, in seconds. */
+    private const RETRY_AFTER_MAX = 30;
+
     /** @param float $retryBaseSeconds the first backoff; each retry doubles it, with jitter */
     public function __construct(private readonly Config $config, private readonly float $retryBaseSeconds = 0.5)
     {
@@ -138,7 +149,8 @@ final class S3Bucket implements Bucket
                             $failure ??= "{$spec['method']} {$spec['key']} failed after {$attempt} attempts (" . ($status === 0 ? $error : "HTTP {$status}") . ')';
                             continue;
                         }
-                        $delayed[] = [microtime(true) + $this->retryBaseSeconds * (2 ** ($attempt - 1)) * (0.5 + mt_rand(0, 1000) / 1000), $spec, $attempt + 1];
+                        $wait = max($this->retryBaseSeconds * (2 ** ($attempt - 1)) * (0.5 + mt_rand(0, 1000) / 1000), min($meta['retryAfter'], self::RETRY_AFTER_MAX));
+                        $delayed[] = [microtime(true) + $wait, $spec, $attempt + 1];
                         continue;
                     }
                     if ($status !== 200 && $status !== 404 && $status !== 412) {
@@ -171,20 +183,22 @@ final class S3Bucket implements Bucket
         $url = "{$this->config->endpoint}/{$this->config->bucket}/{$key}";
         $signed = $this->signer->sign($spec['method'], $url, $spec['headers'], hash('sha256', $body), new \DateTimeImmutable('now'));
         $handle = curl_init($url);
-        $meta = ['etag' => '', 'size' => 0];
-        curl_setopt_array($handle, [
+        $meta = ['etag' => '', 'size' => 0, 'retryAfter' => 0];
+        curl_setopt_array($handle, self::CURL_LIMITS + [
             CURLOPT_CUSTOMREQUEST => $spec['method'],
-            CURLOPT_HTTPHEADER => array_map(fn (string $k, string $v) => "{$k}: {$v}", array_keys($signed), $signed),
+            // An empty Expect skips the 100-continue round trip before every body.
+            CURLOPT_HTTPHEADER => [...array_map(fn (string $k, string $v) => "{$k}: {$v}", array_keys($signed), $signed), 'Expect:'],
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_PROTOCOLS => CURLPROTO_HTTPS | CURLPROTO_HTTP,
-            CURLOPT_TIMEOUT => 120,
             CURLOPT_NOBODY => $spec['method'] === 'HEAD',
             CURLOPT_HEADERFUNCTION => function ($h, string $line) use (&$meta): int {
                 if (stripos($line, 'etag:') === 0) {
                     $meta['etag'] = trim(substr($line, 5));
                 } elseif (stripos($line, 'content-length:') === 0) {
                     $meta['size'] = (int) trim(substr($line, 15));
+                } elseif (stripos($line, 'retry-after:') === 0 && ctype_digit(trim(substr($line, 12)))) {
+                    $meta['retryAfter'] = (int) trim(substr($line, 12));
                 }
 
                 return strlen($line);
@@ -198,23 +212,45 @@ final class S3Bucket implements Bucket
     }
 
     /**
+     * One request, retried like the batch ones: no answer, 408, 429 and 5xx are tried again with
+     * the same backoff, so the claim, the manifest, snapshots.json and latest.json get the policy
+     * the objects get. A conditional write that was applied but not acknowledged answers 412 on the
+     * retry, which the caller already treats as "check what is there".
+     *
      * @param array<string, string> $headers
      * @return array{int, string, string} status, body, ETag
      */
     private function request(string $method, string $key, string $body, array $headers): array
+    {
+        for ($attempt = 1; ; $attempt++) {
+            [$status, $response, $etag, $error] = $this->requestOnce($method, $key, $body, $headers);
+            if (!in_array($status, self::RETRIABLE, true)) {
+                return [$status, $response, $etag];
+            }
+            if ($attempt >= self::ATTEMPTS) {
+                throw new PublishFailed("{$method} {$key} failed after {$attempt} attempts (" . ($status === 0 ? $error : "HTTP {$status}") . ')');
+            }
+            usleep((int) (1_000_000 * $this->retryBaseSeconds * (2 ** ($attempt - 1)) * (0.5 + mt_rand(0, 1000) / 1000)));
+        }
+    }
+
+    /**
+     * @param array<string, string> $headers
+     * @return array{int, string, string, string} status (0 when nothing answered), body, ETag, curl error
+     */
+    private function requestOnce(string $method, string $key, string $body, array $headers): array
     {
         preg_match('#^[A-Za-z0-9._/-]+$#', $key) && !str_contains($key, '..') || throw new PublishFailed("refusing an unexpected object key {$key}");
         $url = "{$this->config->endpoint}/{$this->config->bucket}/{$key}";
         $signed = $this->signer->sign($method, $url, $headers, hash('sha256', $body), new \DateTimeImmutable('now'));
         $curl = curl_init($url);
         $etag = '';
-        curl_setopt_array($curl, [
+        curl_setopt_array($curl, self::CURL_LIMITS + [
             CURLOPT_CUSTOMREQUEST => $method,
-            CURLOPT_HTTPHEADER => array_map(fn (string $k, string $v) => "{$k}: {$v}", array_keys($signed), $signed),
+            CURLOPT_HTTPHEADER => [...array_map(fn (string $k, string $v) => "{$k}: {$v}", array_keys($signed), $signed), 'Expect:'],
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_PROTOCOLS => CURLPROTO_HTTPS | CURLPROTO_HTTP,
-            CURLOPT_TIMEOUT => 120,
             CURLOPT_HEADERFUNCTION => function ($curl, string $line) use (&$etag): int {
                 if (stripos($line, 'etag:') === 0) {
                     $etag = trim(substr($line, 5));
@@ -227,10 +263,11 @@ final class S3Bucket implements Bucket
             curl_setopt($curl, CURLOPT_POSTFIELDS, $body);
         }
         $response = curl_exec($curl);
-        $status = (int) curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
         $error = curl_error($curl);
-        $response !== false || throw new PublishFailed("{$method} {$key} failed: {$error}");
+        if ($response === false) {
+            return [0, '', '', $error];
+        }
 
-        return [$status, (string) $response, $etag];
+        return [(int) curl_getinfo($curl, CURLINFO_RESPONSE_CODE), (string) $response, $etag, ''];
     }
 }

@@ -55,6 +55,11 @@ if (isset($faults[$key])) {
         fwrite($fh, (string) ($used + 1));
         flock($fh, LOCK_UN);
         fclose($fh);
+        if (($faults[$key][2] ?? '') === 'after' && $method === 'PUT') {
+            // Applied but not acknowledged: the object is stored, then the answer is a failure.
+            @mkdir(dirname($file), 0o755, true);
+            @file_put_contents($file, (string) file_get_contents('php://input'));
+        }
         $respond($faults[$key][0]);
 
         return;
@@ -96,4 +101,6 @@ if (!is_file($file)) {
     return;
 }
 $body = (string) file_get_contents($file);
-$respond(200, $method === 'HEAD' ? '' : $body, ['ETag' => '"' . md5($body) . '"', 'Content-Length' => (string) strlen($body)]);
+// A bucket whose ETags are not md5 (a multipart upload, say): the publisher must compare bodies.
+$etag = is_file("{$dir}/odd-etags") ? '"' . md5($body) . '-3"' : '"' . md5($body) . '"';
+$respond(200, $method === 'HEAD' ? '' : $body, ['ETag' => $etag, 'Content-Length' => (string) strlen($body)]);
