@@ -15,6 +15,7 @@ parse, build and gates, and calls these for the steps that must be identical.
 | `Manifest` | a file's `sha256`/`bytes`/`content_type` entry, UTC timestamps |
 | `Snapshots` | snapshot ids (`YYYY-MM-DD[.n]`, never reused), `snapshots.json` append, `latest.json` pointer |
 | `Gate\SchemaValidator`, `Gate\GateReport`, `Gate\Failure` | validate against a `$defs` entry; the verdict bound to the manifest's sha256; thresholds that can be approved by name and hard gates that cannot |
+| `Publish\ScopedBucket` | every Publisher wraps its bucket in one: a key outside the layout's root folder, or one with a `..`, `.` or empty segment, is refused before it reaches the bucket, because datasets share a bucket and a write token |
 | `Publish\Publisher` | create-only upload (`If-None-Match: *`) of the files, then `snapshots.json` (`If-Match`), then `latest.json`, then a cache purge; refuses a build the gates did not pass for this exact manifest |
 | `Publish\S3Bucket`, `SigV4`, `DirectoryBucket`, `CloudflarePurger`, `Config` | R2 over curl with SigV4; a local directory for `--dry-run`; credentials from the environment only, never in a message |
 | `Publish\PreviousSnapshot` | reads the published index and last snapshot back from the CDN, each file checked against its manifest |

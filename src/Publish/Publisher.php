@@ -40,14 +40,17 @@ final class Publisher
 
     public const SHORT = 'public, max-age=300';
 
+    private readonly Bucket $bucket;
+
     public function __construct(
         private readonly Layout $layout,
-        private readonly Bucket $bucket,
+        Bucket $bucket,
         private readonly ?Purger $purger,
         private readonly string $publicBaseUrl,
         private readonly \Closure $log,
         private readonly ?\Closure $now = null,
     ) {
+        $this->bucket = new ScopedBucket($bucket, $layout->root);
     }
 
     public function publish(string $out, string $snapshot): void
