@@ -22,7 +22,7 @@ beforeEach(function () {
             $this->urls = [...$this->urls, ...$urls];
         }
     };
-    $this->publisher = fn (?DirectoryBucket $bucket = null) => new Publisher(
+    $this->publisher = fn (?Farzai\DatasetKit\Publish\Bucket $bucket = null) => new Publisher(
         demoLayout(),
         $bucket ?? new DirectoryBucket($this->bucketDir),
         $this->purger,
@@ -191,3 +191,50 @@ test('a content type outside the allow-list stops the publish before any upload'
     expect(fn () => ($this->publisher)()->publish($this->out, '2026-10-14'))->toThrow(PublishFailed::class, 'content type that is not allowed');
     $this->assertFileDoesNotExist("{$this->bucketDir}/demo/v1/latest.json");
 })->with(['text/html', 'text/html; charset=utf-8', "text/plain\r\nSet-Cookie: x=1", 'image/svg+xml', '']);
+
+
+test('every key the publisher touches is under the layout root, docs and pointers included', function () {
+    demoBuild($this->out);
+    $spy = new class($this->bucketDir) implements Farzai\DatasetKit\Publish\Bucket {
+        public array $keys = [];
+
+        private DirectoryBucket $inner;
+
+        public function __construct(string $dir)
+        {
+            $this->inner = new DirectoryBucket($dir);
+        }
+
+        public function put(string $key, string $body, array $headers, ?string $ifMatch): bool
+        {
+            $this->keys[] = $key;
+
+            return $this->inner->put($key, $body, $headers, $ifMatch);
+        }
+
+        public function get(string $key): ?array
+        {
+            $this->keys[] = $key;
+
+            return $this->inner->get($key);
+        }
+    };
+    $publisher = ($this->publisher)($spy);
+    $publisher->publish($this->out, '2026-10-14');
+    $publisher->publishDocs(['llms.txt' => 'x']);
+
+    $this->assertNotSame([], $spy->keys);
+    foreach ($spy->keys as $key) {
+        $this->assertStringStartsWith('demo/', $key);
+    }
+});
+
+test('the publisher refuses to write outside its root even if a layout or a manifest tries', function () {
+    demoBuild($this->out);
+    $bucket = new DirectoryBucket($this->bucketDir);
+    $layout = new Farzai\DatasetKit\Layout('demo', '1.0.0', ['items.json'], ['items.json'], ['items.json'], [], 'ua', '../thailand-address');
+    $publisher = new Publisher($layout, $bucket, null, 'https://data.example', fn (string $l) => null);
+
+    expect(fn () => $publisher->publish($this->out, '2026-10-14'))->toThrow(PublishFailed::class);
+    $this->assertFileDoesNotExist("{$this->bucketDir}/plan.jsonl");
+});
