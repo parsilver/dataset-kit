@@ -72,6 +72,10 @@ afterEach(function () {
     if (isset($this->server)) {
         proc_terminate($this->server);
         proc_close($this->server);
+        // PHP_CLI_SERVER_WORKERS forks workers that outlive a terminated master; they all carry
+        // the master's command line, so this ends every one of them. Without it each run of the
+        // suite leaves a couple of hundred idle processes behind.
+        exec('pkill -f ' . escapeshellarg("php -S 127.0.0.1:{$this->port}") . ' 2>/dev/null');
     }
     exec('rm -rf ' . escapeshellarg($this->out) . ' ' . escapeshellarg($this->s3));
 });
