@@ -85,15 +85,42 @@ final class PreviousSnapshot
 
     private function get(string $key): ?string
     {
+        $headers = [];
         $curl = curl_init("{$this->base}/{$key}");
-        curl_setopt_array($curl, [CURLOPT_RETURNTRANSFER => true, CURLOPT_FOLLOWLOCATION => false, CURLOPT_TIMEOUT => 120, CURLOPT_HTTPHEADER => ['User-Agent: ' . $this->layout->userAgent]]);
+        curl_setopt_array($curl, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_TIMEOUT => 120,
+            CURLOPT_HTTPHEADER => ['User-Agent: ' . $this->layout->userAgent],
+            CURLOPT_HEADERFUNCTION => function ($curl, string $line) use (&$headers): int {
+                if (str_contains($line, ':')) {
+                    [$name, $value] = explode(':', $line, 2);
+                    $headers[strtolower(trim($name))] = trim($value);
+                }
+
+                return strlen($line);
+            },
+        ]);
         $body = curl_exec($curl);
         $status = (int) curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
         if ($status === 404) {
             return null;
         }
-        ($status === 200 && is_string($body)) || throw new \RuntimeException("GET {$this->base}/{$key} answered {$status}");
-
-        return $body;
+        if ($status === 200 && is_string($body)) {
+            return $body;
+        }
+        $url = "{$this->base}/{$key}";
+        // A 403 from Cloudflare's edge is its bot protection or WAF refusing this machine, not the
+        // bucket saying the object is missing (that is a 404). Say which, so nobody goes looking
+        // for a missing file.
+        if (in_array($status, [403, 429, 503], true) && (isset($headers['cf-ray']) || strtolower($headers['server'] ?? '') === 'cloudflare')) {
+            $ray = $headers['cf-ray'] ?? 'none';
+            $challenge = is_string($body) && preg_match('/Attention Required|Just a moment|cf-chl|challenge-platform/i', $body) === 1 ? ', challenge page' : '';
+            throw new \RuntimeException(
+                "GET {$url} answered {$status}: blocked by Cloudflare (bot protection or WAF{$challenge}, cf-ray {$ray}), not a missing object. "
+                . 'The zone refuses this machine; allow it in the zone\'s security settings or run from an allowed network.'
+            );
+        }
+        throw new \RuntimeException("GET {$url} answered {$status}" . ($status === 0 ? ' (no response: ' . curl_error($curl) . ')' : ''));
     }
 }
