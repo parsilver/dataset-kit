@@ -238,3 +238,12 @@ test('the publisher refuses to write outside its root even if a layout or a mani
     expect(fn () => $publisher->publish($this->out, '2026-10-14'))->toThrow(PublishFailed::class);
     $this->assertFileDoesNotExist("{$this->bucketDir}/plan.jsonl");
 });
+
+test('a doc name that climbs out of the root reaches the bucket guard and is refused, nothing written', function () {
+    $layout = new Farzai\DatasetKit\Layout('demo', '1.0.0', ['items.json'], ['items.json'], ['items.json'], ['../other/llms.txt' => 'text/plain; charset=utf-8'], 'ua');
+    $publisher = new Publisher($layout, new DirectoryBucket($this->bucketDir), null, 'https://data.example', fn (string $l) => null);
+
+    expect(fn () => $publisher->publishDocs(['../other/llms.txt' => 'x']))->toThrow(PublishFailed::class, 'outside the bucket folder');
+    $this->assertFileDoesNotExist("{$this->bucketDir}/plan.jsonl");
+    $this->assertFileDoesNotExist("{$this->bucketDir}/other/llms.txt");
+});
